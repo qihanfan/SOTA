@@ -22,7 +22,7 @@ summary(mod)
 mod.seg <-
   segmented(
     mod,
-    psi=3,
+    psi=4,
     seg.Z = ~ interaction,
     control = seg.control(quant = F,
                           n.boot = 0,
@@ -36,10 +36,10 @@ print(psi)
 ##estimate active time point in crossover models
 #The K-M curve is locally enlarged
 km=ggsurvplot(fit,palette=c('#E7B800','#2E9FDF'),risk.table=F,pval=TRUE,conf.int=TRUE,xlab='Months',
-              ncensor.plot=F,ncensor.plot.height=0.45,break.x.by=0.5,break.y.by=0.1,xlim=c(4,6),ylim=c(0,1))
+              ncensor.plot=F,ncensor.plot.height=0.45,break.x.by=0.5,break.y.by=0.1,xlim=c(8,10),ylim=c(0,1))
 km
 ##Find the intersection coordinates
 fit3<-survfit(Surv(time, status)~1,data=group)
 fit2<-survfit(Surv(time, status)~treat,data=group2)
 cbind(fit2$time,fit2$surv)
-quantile(fit3,probs = round(1-fit2$surv[which(fit2$time== 12)],2))
+quantile(fit3,probs = round(1-fit2$surv[which(fit2$time== 9.0017)],2))
