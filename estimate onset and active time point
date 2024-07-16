@@ -1,0 +1,45 @@
+##loading R package
+library("IPDfromKM")
+library("ggplot2")
+library("survival")
+library('survminer')
+library('survivalROC')
+library(segmented)
+library(ggplot2)
+
+group1<-read.csv('/newdata/chemo survdata.csv',head=TRUE,sep=" ")
+group2<-read.csv('/newdata/immuno survdata.csv',head=TRUE,sep=" ")
+group<-rbind(group1,group2)
+fit<-survfit(Surv(time, status)~treat,data=group)
+
+##estimate onset time point
+fit.KM <- survfit(Surv(time, status) ~ treat, data=group)
+ggsurvplot(fit.KM,break.x.by=2)
+group$interaction <- group$time* group$treat
+group$treat <- factor(group$treat)
+mod<- coxph(Surv(time, status) ~ treat+interaction, data=group)
+summary(mod)
+mod.seg <-
+  segmented(
+    mod,
+    psi=3,
+    seg.Z = ~ interaction,
+    control = seg.control(quant = F,
+                          n.boot = 0,
+                          it.max = 1000)
+  )
+##The parameter psi can be flexibly selected according to the K-M curve
+summary(mod.seg)
+psi <- confint.segmented(mod.seg)
+print(psi)
+
+##estimate active time point in crossover models
+#The K-M curve is locally enlarged
+km=ggsurvplot(fit,palette=c('#E7B800','#2E9FDF'),risk.table=F,pval=TRUE,conf.int=TRUE,xlab='Months',
+              ncensor.plot=F,ncensor.plot.height=0.45,break.x.by=0.5,break.y.by=0.1,xlim=c(4,6),ylim=c(0,1))
+km
+##Find the intersection coordinates
+fit3<-survfit(Surv(time, status)~1,data=group)
+fit2<-survfit(Surv(time, status)~treat,data=group2)
+cbind(fit2$time,fit2$surv)
+quantile(fit3,probs = round(1-fit2$surv[which(fit2$time== 12)],2))
