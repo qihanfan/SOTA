@@ -1,1 +1,41 @@
+##loading R package
+library("IPDfromKM")
+library("ggplot2")
+library("survival")
+library('survminer')
+library('survivalROC')
+library(segmented)
+library(ggplot2)
 
+##Load coordinate data
+df<-read.csv('/rawdata/chemo.csv',head=TRUE,sep=",")
+df1<-read.csv('/rawdata/immuno.csv',head=TRUE,sep=",")
+radiationdata<-read.csv('/rawdata/radiation.csv',head=TRUE,sep=",")
+
+##Generate reconstructed data
+pre_radio<-preprocess(dat=df,trisk=radiationdata$trisk,nrisk=radiationdata$radio,totalpts=NULL,maxy=1)
+pre_radio_plus<-preprocess(dat=df1,trisk=radiationdata$trisk,nrisk=radiationdata$radioplus,totalpts=NULL,maxy=1)
+est_radio<-getIPD(prep=pre_radio, armID=0,tot.event=NULL)
+est_radio_plus<-getIPD(prep=pre_radio_plus, armID=1,tot.event=NULL)
+plot(est_radio)
+plot(est_radio_plus)
+group1=est_radio$IPD
+group2=est_radio_plus$IPD
+write<-function(name1,name2)  {
+  write.table (group1, file =paste0("/newdata/",name1,".csv"))
+  write.table (group2, file =paste0("/newdata/",name2,".csv"))
+}
+write(name1="chemo survdata",name2="immuno survdata")
+survreport(ipd1=est_radio$IPD,ipd2=est_radio_plus$IPD,arms=2,interval=8,s=c(0.50,0.75,0.95))
+
+##Fit the K-M curve
+group1<-read.csv('/newdata/chemo survdata.csv',head=TRUE,sep=" ")
+group2<-read.csv('/newdata/immuno survdata.csv',head=TRUE,sep=" ")
+group<-rbind(group1,group2)
+fit<-survfit(Surv(time, status)~treat,data=group)
+ggsurvplot(fit)
+km=ggsurvplot(fit,palette=c('#E7B800','#2E9FDF'),risk.table=F,pval=TRUE,conf.int=TRUE,xlab='Months',
+              ncensor.plot=F,ncensor.plot.height=0.45,break.x.by=2,break.y.by=0.1,xlim=c(0,30),ylim=c(0,1))
+km
+fitnew<-cbind(fit$time,fit$n.risk,fit$n.event,fit$n.censor,fit$surv,fit$lower,fit$upper)
+write.table(fitnew,"/newdata/km data.xlsx",sep="\t",row.names = F,col.names = TRUE,quote=TRUE)
