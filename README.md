@@ -1,8 +1,8 @@
-Overview
+Overview：
 SOTA estimates the Superiority Onset Time (SOT) and post-onset hazard ratio (HR) for PD-1/PD-L1 inhibitors using reconstructed Kaplan-Meier (K-M) survival curves. 
 It is designed to address time-dependent effects such as delayed therapeutic response and crossing survival curves, which violate the proportional hazards assumption and may obscure true treatment benefits in conventional Cox models.
 
-Method Summary
+Method Summary：
 1. K-M Curve Reconstruction
    Uses the IPDfromKM R package to extract individual patient data (IPD) from published survival curves.
 
