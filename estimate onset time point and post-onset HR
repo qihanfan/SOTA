@@ -40,11 +40,10 @@ get_cut_seq <- function(data, n = 200) {
   event_times <- data$time[data$status == 1 & data$x == 1]
   if (length(event_times) < 2) stop("Not enough events in treatment group.")
   
-  # Step 1: 基于分位数进行筛选，去掉最早的 15% 和最晚的 1%
+  #去掉最早的 5% 和最晚的 5%
   q_range <- quantile(event_times, probs = c(0.05, 0.95))
   filtered_times <- event_times[event_times >= q_range[1] & event_times <= q_range[2]]
   
-  # Step 2: 进一步筛选前 1/3 的随访时间
   max_time_treatment <- max(data$time[data$x == 1])
   max_time_control <- max(data$time[data$x == 0])
   max_time <- max(max_time_treatment, max_time_control)
@@ -104,8 +103,8 @@ fit_split_model2 <- function(data, cut) {
 
 # ---------- 4. find best cut ----------------
 scan_cutpoints <- function(data, cut_seq, model = NULL) {
-  aic_list <- c()    # 保存 AIC 值
-  used_cut <- c()    # 保存切点
+  aic_list <- c()    
+  used_cut <- c()    
   for (cut in cut_seq) {
     res <- tryCatch({
       if (model == "delayed") {
@@ -117,15 +116,12 @@ scan_cutpoints <- function(data, cut_seq, model = NULL) {
       }
     }, error = function(e) NULL)
     
-    # 如果模型 fitting 失败或返回 NULL，跳过
     if (is.null(res) || is.null(res$fit)) next
     
-    # 尝试计算 AIC，确保不会因内部错误崩溃
     aic_val <- tryCatch({
       AIC(res$fit)
     }, error = function(e) NA)
     
-    # 只有在 AIC 有效时才保存
     if (!is.na(aic_val)) {
       aic_list <- c(aic_list, aic_val)
       used_cut <- c(used_cut, cut)
@@ -150,7 +146,6 @@ bootstrap_cut_ci <- function(data, cut_seq = NULL, B = 1000, conf_level = 0.95, 
     boot_idx <- sample(1:nrow(data), replace = TRUE)
     boot_data <- data[boot_idx, ]
     
-    # 动态生成 cut_seq（如果未提供）
     this_cut_seq <- tryCatch({
       if (is.null(cut_seq)) {
         get_cut_seq(boot_data, n = n_cut)
