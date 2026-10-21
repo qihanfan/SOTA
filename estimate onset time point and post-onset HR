@@ -190,14 +190,6 @@ bootstrap_cut_ci <- function(data, cut_seq = NULL, B = 1000, conf_level = 0.95, 
 
 # ---------- 6. landmark ----------------
 fit_landmark_dual_model <- function(data, landmark_time) {
-  # HR before landmark（t < landmark）
-  early_data <- data[data$time <= landmark_time, ]
-  fit_early <- coxph(Surv(time, status) ~ x, data = early_data)
-  HR_early <- exp(coef(fit_early))
-  ci_early <- confint(fit_early)
-  HR_early_ci_lower <- exp(ci_early[1, 1])
-  HR_early_ci_upper <- exp(ci_early[1, 2])
-  
   late_data <- data[data$time > landmark_time, ]
   late_data$time_lm <- late_data$time - landmark_time
   fit_late <- coxph(Surv(time_lm, status) ~ x, data = late_data)
@@ -205,11 +197,7 @@ fit_landmark_dual_model <- function(data, landmark_time) {
   ci_late <- confint(fit_late)
   HR_late_ci_lower <- exp(ci_late[1, 1])
   HR_late_ci_upper <- exp(ci_late[1, 2])
-  
   return(list(
-    HR_early = HR_early,
-    HR_early_ci_lower = HR_early_ci_lower,
-    HR_early_ci_upper = HR_early_ci_upper,
     HR_late = HR_late,
     HR_late_ci_lower = HR_late_ci_lower,
     HR_late_ci_upper = HR_late_ci_upper
@@ -218,9 +206,8 @@ fit_landmark_dual_model <- function(data, landmark_time) {
 
 #####################stimulation########################
 ##NO Parallel
-result <- matrix(nrow = 100, ncol = 9)
+result <- matrix(nrow = 100, ncol = 6)
 colnames(result) <- c("Best_Cut", "CI_Lower", "CI_Upper", 
-                      "HR_Early", "HR_Early_Lower", "HR_Early_Higher",
                       "HR_Late", "HR_Late_Lower", "HR_Late_Higher"
 )
 
@@ -238,11 +225,9 @@ for (x in 1:100) {
   ci_upper <- as.numeric(boot_result$ci[2])
   model_res <- fit_landmark_dual_model(sim_data, landmark_time = cut_opt)
   result[x, ] <- c(cut_opt, ci_lower, ci_upper,
-                   model_res$HR_early, model_res$HR_early_ci_lower, model_res$HR_early_ci_upper,
                    model_res$HR_late, model_res$HR_late_ci_lower, model_res$HR_late_ci_upper)
   print(result[x, ])
 }
-
 
 ##Parallel
 cl <- makeCluster(20)  
@@ -261,13 +246,11 @@ result <- foreach(x = 1:100, .combine = rbind,
                     ci_upper <- as.numeric(boot_result$ci[2])
                     model_res <- fit_landmark_dual_model(sim_data, landmark_time = cut_opt)
                     
-                    c(cut_opt, ci_lower, ci_upper,
-                      model_res$HR_early, model_res$HR_early_ci_lower, model_res$HR_early_ci_upper,
+                    c(cut_opt, ci_lower, ci_upper, 
                       model_res$HR_late, model_res$HR_late_ci_lower, model_res$HR_late_ci_upper)
                   }
 
 colnames(result) <- c("Best_Cut", "CI_Lower", "CI_Upper", 
-                      "HR_Early", "HR_Early_Lower", "HR_Early_Higher",
                       "HR_Late", "HR_Late_Lower", "HR_Late_Higher")
 stopCluster(cl)
 
@@ -275,7 +258,6 @@ stopCluster(cl)
 result_df <- as.data.frame(result)
 head(result_df)
 colnames(result_df) <- c("Best_Cut", "CI_Lower", "CI_Upper", 
-                         "HR_Early", "HR_Early_Lower", "HR_Early_Higher",
                          "HR_Late", "HR_Late_Lower", "HR_Late_Higher")
 
 
