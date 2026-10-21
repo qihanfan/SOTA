@@ -88,6 +88,7 @@ fit_split_model2 <- function(data, cut) {
   coefs <- coef(fit)
   beta_x <- coefs["x"]
   beta_interaction <- if ("x:phaselate" %in% names(coefs)) coefs["x:phaselate"] else 0
+  HR_early <- exp(beta_x)
   HR_late <- exp(beta_x + beta_interaction)
   # 添加限制：仅当 HR_early > 1 且 HR_late < 1 时返回结果，否则返回 NULL
   if (HR_early < 1 || HR_late >= 1) return(NULL)
