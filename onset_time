@@ -1,0 +1,259 @@
+library(survival)
+library(ggplot2)
+library(dplyr)
+library(doParallel)
+library(foreach)
+library(survminer)
+# ---------- 1. Simulate survival data ----------------
+generate_data <- function(n = NULL, true_cut = NULL, base_hazard = 0.15, 
+                          hr1 = NULL, hr2 = NULL, max_time = 36,
+                          censor_type = "late") {
+  x <- rbinom(n, 1, 0.5) 
+  u <- runif(n)
+  time <- numeric(n)
+  for (i in 1:n) {
+    cumhaz <- function(t) {
+      if (t <= true_cut) {
+        base_hazard * (hr1 ^ x[i]) * t
+      } else {
+        base_hazard * ((hr1 ^ x[i]) * true_cut + (hr2 ^ x[i]) * (t - true_cut))
+      }
+    }
+    root_eq <- function(t) cumhaz(t) + log(u[i])
+    time[i] <- uniroot(root_eq, interval = c(0.01, 100), extendInt = "yes")$root
+  }
+  
+  censor <- switch(censor_type,
+                   "early" = rexp(n, rate = 0.1),                               
+                   "late" = runif(n, min = 24, max = 60),                       
+                   "beta" = qbeta(runif(n), shape1 = 5, shape2 = 1) * max_time * 1.5,  
+                   "none" = rep(Inf, n),                                        
+                   runif(n, min = 0, max = max_time)                            
+  )
+  obs_time <- pmin(time, censor, max_time)
+  status <- as.numeric(time <= censor & time <= max_time)
+  data.frame(id = 1:n, time = obs_time, status = status, x = x)
+}
+
+# ---------- 2. find time-seq ----------------
+get_cut_seq <- function(data, n = 200) {
+  event_times <- data$time[data$status == 1 & data$x == 1]
+  if (length(event_times) < 2) stop("Not enough events in treatment group.")
+  
+  #去掉最早的 5% 和最晚的 5%
+  q_range <- quantile(event_times, probs = c(0.05, 0.95))
+  filtered_times <- event_times[event_times >= q_range[1] & event_times <= q_range[2]]
+  
+  max_time_treatment <- max(data$time[data$x == 1])
+  max_time_control <- max(data$time[data$x == 0])
+  max_time <- max(max_time_treatment, max_time_control)
+  time_limit <- 12
+  
+  valid_times <- filtered_times[filtered_times <= time_limit]
+  if (length(valid_times) < 2) stop("Not enough valid events in the early follow-up period.")
+  
+  # 生成等距候选 cut points
+  cut_seq <- seq(min(valid_times), max(valid_times), length.out = n)
+  
+  return(cut_seq)
+}
+
+# ---------- 3. Construct piecewise data and fit the model ----------------
+#delayed model
+fit_split_model1 <- function(data, cut) {
+  data_split <- survSplit(Surv(time, status) ~ ., data = data, cut = cut, episode = "phase")
+  data_split$phase <- factor(data_split$phase, levels = c(1, 2), labels = c("early", "late"))
+  data_split$x_late <- ifelse(data_split$phase == "late", data_split$x, 0)
+  fit <- coxph(Surv(tstart, time, status) ~ x_late, data = data_split)
+  coefs <- coef(fit)
+  beta_late <- coefs["x_late"]
+  HR_late <- exp(beta_late)
+  if (HR_late >= 1) {
+    return(NULL)
+  }
+  HR_early <- 1
+  return(list(
+    fit = fit,
+    split_data = data_split,
+    HR_late = HR_late,
+    coef = coefs
+  ))
+}
+
+# cross model
+fit_split_model2 <- function(data, cut) {
+  data_split <- survSplit(Surv(time, status) ~ ., data = data, cut = cut, episode = "phase")
+  data_split$phase <- factor(data_split$phase, levels = c(1, 2), labels = c("early", "late"))
+  fit <- coxph(Surv(tstart, time, status) ~ x * phase, data = data_split)
+  coefs <- coef(fit)
+  beta_x <- coefs["x"]
+  beta_interaction <- if ("x:phaselate" %in% names(coefs)) coefs["x:phaselate"] else 0
+  HR_early <- exp(beta_x)
+  HR_late <- exp(beta_x + beta_interaction)
+  # 添加限制：仅当 HR_early > 1 且 HR_late < 1 时返回结果，否则返回 NULL
+  if (HR_early < 1 || HR_late >= 1) return(NULL)
+  return(list(
+    fit = fit,
+    split_data = data_split,
+    HR_late = HR_late
+  ))
+}
+
+# ---------- 4. find best cut ----------------
+scan_cutpoints <- function(data, cut_seq, model = NULL) {
+  aic_list <- c()    
+  used_cut <- c()    
+  for (cut in cut_seq) {
+    res <- tryCatch({
+      if (model == "delayed") {
+        fit_split_model1(data, cut)
+      } else if (model == "cross") {
+        fit_split_model2(data, cut)
+      } else {
+        stop("Invalid model type. Use 'delayed' or 'cross'.")
+      }
+    }, error = function(e) NULL)
+    
+    if (is.null(res) || is.null(res$fit)) next
+    
+    aic_val <- tryCatch({
+      AIC(res$fit)
+    }, error = function(e) NA)
+    
+    if (!is.na(aic_val)) {
+      aic_list <- c(aic_list, aic_val)
+      used_cut <- c(used_cut, cut)
+    }
+  }
+  
+  result <- data.frame(
+    cut = used_cut,
+    AIC = aic_list
+  )
+  return(result)
+}
+
+# ---------- 5. bootstrap ----------------
+bootstrap_cut_ci <- function(data, cut_seq = NULL, B = 1000, conf_level = 0.95, verbose = TRUE, model = NULL, n_cut = NULL) {
+  best_cuts <- numeric(B)
+  if (verbose) pb <- txtProgressBar(0, B, style = 3)
+  
+  for (b in 1:B) {
+    set.seed(100 + b)
+    boot_idx <- sample(1:nrow(data), replace = TRUE)
+    boot_data <- data[boot_idx, ]
+    
+    this_cut_seq <- tryCatch({
+      if (is.null(cut_seq)) {
+        get_cut_seq(boot_data, n = n_cut)
+      } else {
+        cut_seq
+      }
+    }, error = function(e) {
+      NA
+    })
+    
+    if (any(is.na(this_cut_seq))) {
+      best_cuts[b] <- NA
+      if (verbose) setTxtProgressBar(pb, b)
+      next
+    }
+    
+    res <- try(scan_cutpoints(boot_data, this_cut_seq, model = model), silent = TRUE)
+    
+    if (!inherits(res, "try-error") && nrow(res) > 0) {
+      min_row <- res[which.min(res$AIC), ]
+      best_cuts[b] <- min_row$cut
+    } else {
+      best_cuts[b] <- NA
+    }
+    
+    if (verbose) setTxtProgressBar(pb, b)
+  }
+  
+  best_cuts <- na.omit(best_cuts)
+  ci <- quantile(best_cuts, probs = c((1 - conf_level) / 2, 1 - (1 - conf_level) / 2))
+  
+  return(list(
+    bootstrap_cuts = best_cuts,
+    ci = ci,
+    mean = mean(best_cuts),
+    median = median(best_cuts),
+    se = sd(best_cuts),
+    n_success = length(best_cuts)
+  ))
+}
+
+
+# ---------- 6. landmark ----------------
+fit_landmark_dual_model <- function(data, landmark_time) {
+  late_data <- data[data$time > landmark_time, ]
+  late_data$time_lm <- late_data$time - landmark_time
+  fit_late <- coxph(Surv(time_lm, status) ~ x, data = late_data)
+  HR_late <- exp(coef(fit_late))
+  ci_late <- confint(fit_late)
+  HR_late_ci_lower <- exp(ci_late[1, 1])
+  HR_late_ci_upper <- exp(ci_late[1, 2])
+  return(list(
+    HR_late = HR_late,
+    HR_late_ci_lower = HR_late_ci_lower,
+    HR_late_ci_upper = HR_late_ci_upper
+  ))
+}
+
+#####################stimulation########################
+
+##NO Parallel
+result <- matrix(nrow = 100, ncol = 6)
+colnames(result) <- c("Best_Cut", "CI_Lower", "CI_Upper", 
+                      "HR_Late", "HR_Late_Lower", "HR_Late_Higher"
+)
+
+for (x in 1:100) {
+  set.seed(x)
+  model <- "delayed"
+  sim_data <- generate_data(n = 500, true_cut = 2, base_hazard = 0.04, 
+                            hr1 = 1, hr2 = 0.5, max_time = 36)
+  fit <- survfit(Surv(time, status) ~ x, data = sim_data)
+  print(ggsurvplot(fit, break.x.by = 3))
+  boot_result <- bootstrap_cut_ci(sim_data, model = model, B = 1000,n_cut = 100)
+  #boot_result <- bootstrap_cut_ci(sim_data, model = model, B = 1000,n_cut = 200)  
+  cut_opt <- boot_result$median
+  ci_lower <- as.numeric(boot_result$ci[1])
+  ci_upper <- as.numeric(boot_result$ci[2])
+  model_res <- fit_landmark_dual_model(sim_data, landmark_time = cut_opt)
+  result[x, ] <- c(cut_opt, ci_lower, ci_upper,
+                   model_res$HR_late, model_res$HR_late_ci_lower, model_res$HR_late_ci_upper)
+  print(result[x, ])
+}
+
+##Parallel
+cl <- makeCluster(20)  
+registerDoParallel(cl)
+
+result <- foreach(x = 1:100, .combine = rbind,
+                  .packages = c("survival", "ggplot2", "survminer", "dplyr")) %dopar% {
+                    set.seed(x)
+                    sim_data <- generate_data(n = 300, true_cut = 4, base_hazard = 0.15, 
+                                              hr1 = 1.2, hr2 = 0.5, max_time = 36)
+                    model <- "cross"
+                    #boot_result <- bootstrap_cut_ci(sim_data, model = model, B = 1000,n_cut = 100)
+                    boot_result <- bootstrap_cut_ci(sim_data, model = model, B = 1000,n_cut = 200)  
+                    cut_opt <- boot_result$median
+                    ci_lower <- as.numeric(boot_result$ci[1])
+                    ci_upper <- as.numeric(boot_result$ci[2])
+                    model_res <- fit_landmark_dual_model(sim_data, landmark_time = cut_opt)
+                    
+                    c(cut_opt, ci_lower, ci_upper, 
+                      model_res$HR_late, model_res$HR_late_ci_lower, model_res$HR_late_ci_upper)
+                  }
+
+colnames(result) <- c("Best_Cut", "CI_Lower", "CI_Upper", 
+                      "HR_Late", "HR_Late_Lower", "HR_Late_Higher")
+stopCluster(cl)
+
+
+result_df <- as.data.frame(result)
+head(result_df)
+colnames(result_df) <- c("Best_Cut", "CI_Lower", "CI_Upper", 
+                         "HR_Late", "HR_Late_Lower", "HR_Late_Higher")
