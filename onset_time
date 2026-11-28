@@ -202,31 +202,6 @@ fit_landmark_dual_model <- function(data, landmark_time) {
 }
 
 #####################stimulation########################
-
-##NO Parallel
-result <- matrix(nrow = 100, ncol = 6)
-colnames(result) <- c("Best_Cut", "CI_Lower", "CI_Upper", 
-                      "HR_Late", "HR_Late_Lower", "HR_Late_Higher"
-)
-
-for (x in 1:100) {
-  set.seed(x)
-  model <- "delayed"
-  sim_data <- generate_data(n = 500, true_cut = 2, base_hazard = 0.04, 
-                            hr1 = 1, hr2 = 0.5, max_time = 36)
-  fit <- survfit(Surv(time, status) ~ x, data = sim_data)
-  print(ggsurvplot(fit, break.x.by = 3))
-  boot_result <- bootstrap_cut_ci(sim_data, model = model, B = 1000,n_cut = 100)
-  #boot_result <- bootstrap_cut_ci(sim_data, model = model, B = 1000,n_cut = 200)  
-  cut_opt <- boot_result$median
-  ci_lower <- as.numeric(boot_result$ci[1])
-  ci_upper <- as.numeric(boot_result$ci[2])
-  model_res <- fit_landmark_dual_model(sim_data, landmark_time = cut_opt)
-  result[x, ] <- c(cut_opt, ci_lower, ci_upper,
-                   model_res$HR_late, model_res$HR_late_ci_lower, model_res$HR_late_ci_upper)
-  print(result[x, ])
-}
-
 ##Parallel
 cl <- makeCluster(20)  
 registerDoParallel(cl)
